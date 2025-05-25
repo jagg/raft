@@ -1,5 +1,5 @@
 (library
- (name raft)
+ (name raft_lib)
  (inline_tests)
  (preprocess
    (pps ppx_jane))

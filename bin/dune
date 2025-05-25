@@ -1,4 +1,6 @@
 (executable
  (public_name raft)
  (name main)
- (libraries raft))
+(preprocess
+   (pps ppx_jane))
+ (libraries raft_lib eio_main))

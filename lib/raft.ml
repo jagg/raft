@@ -114,7 +114,7 @@ let send_heartbeat raft sw net =
   } in
   raft.state <- new_state
 
-let rec reset_timer raft net (queue : (Command.t, Response.t) Msg_queue.t) =
+let rec reset_timer raft (queue : (Command.t, Response.t) Msg_queue.t) =
   traceln "Resetting timer";
   Option.iter raft.timer ~f:(fun sw ->
       Eio.Switch.fail sw (Cancel.Cancelled Stdlib.Exit));
@@ -142,18 +142,18 @@ let rec reset_timer raft net (queue : (Command.t, Response.t) Msg_queue.t) =
           traceln "I'm a candidate!";
           Msg_queue.send queue Command.Request_vote
       in
-      reset_timer raft net queue
+      reset_timer raft queue
     )
 
 let process_update raft update =
   let sm = State_machine.update raft.state_machine update in
   raft.state_machine <- sm
 
-let append_entries raft queue msg net =
+let append_entries raft queue msg =
   let (new_state, entries, result) = Append_entries.apply msg raft.state in
   raft.state <- new_state;
   if result.success then
-    reset_timer raft net queue;
+    reset_timer raft queue;
   List.iter entries ~f:(fun entry ->
       process_update raft entry.command;
       raft.state <- State.inc_last_applied raft.state;
@@ -161,20 +161,20 @@ let append_entries raft queue msg net =
   result
 
 
-let process_vote_request raft (queue : (Command.t, Response.t) Msg_queue.t) msg net =
+let process_vote_request raft (queue : (Command.t, Response.t) Msg_queue.t) msg =
   let (new_state, result) = Request_vote.apply msg raft.state in
   raft.state <- new_state;
   if result.vote_granted then
     (traceln "Voted for you!";
-    reset_timer raft net queue;)
+    reset_timer raft queue;)
   else
     traceln "Didn't get my vote";
   result
 
 let handler raft net sw (queue : (Command.t, Response.t) Msg_queue.t) (command : Command.t) =
   match command with
-    | Process_append msg -> Response.Append_response (append_entries raft queue msg net);
-    | Process_vote msg -> Response.Election_response (process_vote_request raft queue msg net);
+    | Process_append msg -> Response.Append_response (append_entries raft queue msg);
+    | Process_vote msg -> Response.Election_response (process_vote_request raft queue msg);
     | Send_heartbeat -> send_heartbeat raft sw net; Response.Done
     | Request_vote -> trigger_election raft sw net; Response.Done
     | Execute update ->
@@ -183,7 +183,7 @@ let handler raft net sw (queue : (Command.t, Response.t) Msg_queue.t) (command :
       | Follower | Candidate -> Response.Error "I'm not the leader"
 
 
-let make sw id net env replicas =
+let make id (env : Eio_unix.Stdenv.base) replicas =
   let (persistent : State_machine.update State.Persistent_state.t) = {
     current_term = 0;
     voted_for = None;
@@ -211,5 +211,41 @@ let make sw id net env replicas =
     quorum = Map.length replicas / 2
   }
   in
-  let queue = Msg_queue.make sw  (handler raft net sw) in
-  (raft, queue)
+  raft
+
+
+let handle_rpc (queue : (Command.t, Response.t) Msg_queue.t) flow _addr =
+  traceln "[SERVER-OP] Got a connection";
+  let from_client = Eio.Buf_read.of_flow flow ~max_size:4096 in
+  Eio.Buf_write.with_flow flow @@ fun to_client ->
+  let rpc = Api.receive_rpc_command from_client in
+  let rpc_str = Sexplib.Sexp.to_string_hum ([%sexp_of: Api.rpc] rpc) in
+  traceln "[SERVER] RPC: %s" rpc_str;
+  let response = match rpc with
+    | Append msg -> Msg_queue.send queue (Command.Process_append msg)
+    | Request_vote msg -> Msg_queue.send queue (Command.Process_vote msg)
+  in
+  let resp_msg = match response with
+    | Append_response msg -> Api.Append_response msg
+    | Election_response msg -> Api.Request_vote_response msg
+    | Done | Error _ -> failwith "Unexpected response!"
+  in
+  Api.send_response resp_msg to_client
+
+
+let start raft sw port =
+  Random.self_init ();
+  Eio_main.run @@ fun env ->
+  let addr = `Tcp (Eio.Net.Ipaddr.V4.loopback, port) in
+  let net = Eio.Stdenv.net env in
+  let socket = Eio.Net.listen net ~sw ~reuse_addr:true ~backlog:5 addr in
+  let queue = Msg_queue.make sw (fun queue command ->
+      handler raft net sw queue command) in
+  Fiber.fork ~sw (fun () ->
+      Eio.Net.run_server socket (handle_rpc queue)
+        ~on_error:(traceln "Error found: %a" Fmt.exn));
+  traceln "Starting timer";
+  reset_timer raft queue
+
+
+

@@ -10,7 +10,7 @@ type response =
   | Request_vote_response of Request_vote.result
 [@@deriving sexp]
 
-(** Send an append msg to the replica on the specified IP and Port **)
+(** Send an append msg to the replica on the specified IP and Port *)
 val send_append : Eio.Switch.t ->
   [> [> `Generic ] Eio.Net.ty ] Eio_unix.source ->
   State_machine.update Append_entries.t ->
@@ -18,7 +18,7 @@ val send_append : Eio.Switch.t ->
   int ->
   Append_entries.result Or_error.t
 
-(** Send a vote request msg to the replica on the specified IP and Port **)
+(** Send a vote request msg to the replica on the specified IP and Port *)
 val send_vote_request : Eio.Switch.t ->
   [> [> `Generic ] Eio.Net.ty ] Eio_unix.source ->
   Request_vote.t ->
