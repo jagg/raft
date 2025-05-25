@@ -61,7 +61,12 @@ let trigger_election raft sw net =
                    current_term = Int.max latest_term raft.state.persistent.current_term
                  };
     volatile = { raft.state.volatile with
-                 mode = if vote_count >= List.length responses then Leader else Follower
+                 mode = if vote_count >= raft.quorum then
+                     (traceln "I was elected";
+                     Leader)
+                   else
+                     (traceln "I was NOT elected";
+                     Follower)
                };
   } in
   let st = State.sexp_of_t [%sexp_of: State_machine.update] new_state in
@@ -149,11 +154,9 @@ let process_update raft update =
   let sm = State_machine.update raft.state_machine update in
   raft.state_machine <- sm
 
-let append_entries raft queue msg =
+let append_entries raft _queue msg =
   let (new_state, entries, result) = Append_entries.apply msg raft.state in
   raft.state <- new_state;
-  if result.success then
-    reset_timer raft queue;
   List.iter entries ~f:(fun entry ->
       process_update raft entry.command;
       raft.state <- State.inc_last_applied raft.state;
@@ -161,12 +164,11 @@ let append_entries raft queue msg =
   result
 
 
-let process_vote_request raft (queue : (Command.t, Response.t) Msg_queue.t) msg =
+let process_vote_request raft (_queue : (Command.t, Response.t) Msg_queue.t) msg =
   let (new_state, result) = Request_vote.apply msg raft.state in
   raft.state <- new_state;
   if result.vote_granted then
-    (traceln "Voted for you!";
-    reset_timer raft queue;)
+    traceln "Voted for you!"
   else
     traceln "Didn't get my vote";
   result
@@ -233,11 +235,10 @@ let handle_rpc (queue : (Command.t, Response.t) Msg_queue.t) flow _addr =
   Api.send_response resp_msg to_client
 
 
-let start raft sw port =
+let start raft env sw port =
   Random.self_init ();
-  Eio_main.run @@ fun env ->
   let addr = `Tcp (Eio.Net.Ipaddr.V4.loopback, port) in
-  let net = Eio.Stdenv.net env in
+  let net  = Eio.Stdenv.net env in
   let socket = Eio.Net.listen net ~sw ~reuse_addr:true ~backlog:5 addr in
   let queue = Msg_queue.make sw (fun queue command ->
       handler raft net sw queue command) in

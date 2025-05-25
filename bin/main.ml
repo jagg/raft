@@ -39,7 +39,6 @@ module Config = struct
     let port = ref default_config.port in
     let op_port = ref default_config.op_port in
     let cluster_config = ref "./cluster.conf" in
-    let mode = ref "l" in
 
     let speclist = [
       ("-i", Stdlib.Arg.Set_string id, "Server Id");
@@ -59,11 +58,13 @@ module Config = struct
 end
 
 let () =
+  traceln "[SERVER] Starting Server";
   let config = Config.parse () in
+  Eio_main.run @@ fun env ->
   Switch.run ~name:"Server" @@ fun sw ->
   let config_str = Config.sexp_of_t config in
   traceln "Server Config:\n %s" @@ Sexp.to_string_hum config_str;
   let raft = Raft_lib.Raft.make config.id env config.cluster.replicas in
-  Raft_lib.Raft.start raft sw config.op_port;
+  Raft_lib.Raft.start raft env sw config.op_port;
   traceln "[SERVER] Server ready!";
 
