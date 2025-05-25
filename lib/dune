@@ -1,2 +1,6 @@
 (library
- (name raft))
+ (name raft)
+ (inline_tests)
+ (preprocess
+   (pps ppx_jane))
+ (libraries base core eio_main))
