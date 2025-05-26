@@ -8,8 +8,8 @@ module Command = struct
     | Execute of State_machine.update
     | Request_vote
     | Send_heartbeat
+  [@@deriving sexp]
 end
-[@@deriving sexp]
 
 module Response = struct
   type t =
@@ -17,13 +17,14 @@ module Response = struct
     | Error of string
     | Append_response of Append_entries.result
     | Election_response of Request_vote.result
+  [@@deriving sexp]
 end
-[@@deriving sexp]
 
 type t = {
   mutable state : State_machine.update State.t;
   (* queue : (Command.t, Response.t) Msg_queue.t; *)
   quorum : int;
+  mutable timer_gen: int;
   replicas : (string * int) Map.M(State.Server_id).t;
   mutable state_machine : State_machine.t;
   system_clock : float Time.clock_ty Std.r;
@@ -37,17 +38,14 @@ let init_cluster_map replicas =
 
 
 let trigger_election raft sw net =
-  traceln "Triggering election";
   let (new_state, msg) = Request_vote.emit raft.state in
   raft.state <- new_state;
   let responses = List.map (Map.data raft.replicas) ~f:(fun (ip,port) ->
       (* TODO run this in parallel! *)
-      traceln "Sending election msg to %s:%d" ip port;
       Api.send_vote_request sw net msg ip port)
   in
   let ok_resp = List.filter_map responses ~f:(fun r -> match r with
       | Ok r ->
-        traceln "Got an election response";
         Some r
       | Error e ->
         traceln "Trigger election error: %s" (Error.to_string_hum e);
@@ -68,7 +66,7 @@ let trigger_election raft sw net =
                      (traceln "I was elected with %d votes" vote_count;
                      Leader)
                    else
-                     (traceln "I was NOT elected";
+                     (traceln "I was NOT elected, only got %d votes" vote_count;
                      Follower)
                };
   } in
@@ -77,7 +75,6 @@ let trigger_election raft sw net =
   raft.state <- new_state
 
 let send_heartbeat raft sw net =
-  traceln "Sending heartbeats";
   let msgs = Append_entries.emit_all raft.state in
   let responses = List.map msgs ~f:(fun msg ->
       (* TODO run this in parallel! *)
@@ -122,51 +119,118 @@ let send_heartbeat raft sw net =
   } in
   raft.state <- new_state
 
-exception Timer_cancel
 
-let reset_timer main_sw raft (queue : (Command.t, Response.t) Msg_queue.t) =
-  traceln "Resetting timer";
-  Option.iter raft.timer ~f:(fun old_sw ->
-    Eio.Switch.fail old_sw (Eio.Cancel.Cancelled Timer_cancel)
-  );
+let rec reset_timer main_sw raft (queue : (Command.t, Response.t) Msg_queue.t) =
+  raft.timer_gen <- raft.timer_gen + 1 % 99999;
+  let this_gen = raft.timer_gen in
 
   Eio.Fiber.fork ~sw:main_sw (fun () ->
-    Eio.Switch.run_protected ~name:"Timer" (fun timer_sw ->
-      raft.timer <- Some timer_sw;
+    let secs =
+      match raft.state.volatile.mode with
+      | Leader    -> 0.200
+      | Follower
+      | Candidate -> 3.000
+    in
+    let wait_for = secs +. Random.float secs in
+    Eio.Time.sleep raft.system_clock wait_for;
 
-      let rec loop () =
-        let secs = match raft.state.volatile.mode with
-          | Leader    -> 0.200
-          | Follower | Candidate -> 3.000
+    if this_gen = raft.timer_gen then (
+      Eio.Fiber.fork ~sw:main_sw (fun () ->
+        let _ = match raft.state.volatile.mode with
+        | Leader    -> Msg_queue.send queue Command.Send_heartbeat
+        | Follower
+        | Candidate -> Msg_queue.send queue Command.Request_vote
         in
-        let wait_for = secs +. Random.float secs in
+        ()
+      );
 
-        traceln "Timer sleeping %.3f s" wait_for;
-        Eio.Time.sleep raft.system_clock wait_for;
-
-        traceln "⮀ Timer fired, dispatching…";
-        Eio.Fiber.fork ~sw:main_sw (fun () ->
-          let _ = match raft.state.volatile.mode with
-            | Leader    ->
-              traceln "I'm a leader";
-              Msg_queue.send queue Command.Send_heartbeat
-            | Follower  ->
-              traceln "I'm a follower";
-              Msg_queue.send queue Command.Request_vote
-            | Candidate ->
-              traceln "I'm a candidate";
-              Msg_queue.send queue Command.Request_vote
-          in ()
-        );
-
-        loop ()
-      in
-
-      match loop () with
-      | () -> traceln "???"
-      | exception Stdlib.Exit -> traceln "Cancelling execution"
-    )
+      reset_timer main_sw raft queue
+    ) else ()
   )
+
+
+exception Timer_cancel
+(* let reset_timer main_sw raft (queue : (Command.t, Response.t) Msg_queue.t) = *)
+(*   traceln "Resetting timer"; *)
+(*   Eio.Fiber.fork ~sw:main_sw (fun () -> *)
+(*       Option.iter raft.timer ~f:(fun old_sw -> *)
+(*           Eio.Switch.fail old_sw (Eio.Cancel.Cancelled Timer_cancel) *)
+(*         ); *)
+(*       Eio.Switch.run_protected ~name:"Timer" (fun timer_sw -> *)
+(*           raft.timer <- Some timer_sw; *)
+
+(*           let rec loop () = *)
+(*             let secs = match raft.state.volatile.mode with *)
+(*               | Leader    -> 0.200 *)
+(*               | Follower | Candidate -> 3.000 *)
+(*             in *)
+(*             let wait_for = secs +. Random.float secs in *)
+
+(*             traceln "Timer sleeping %.3f s" wait_for; *)
+(*             Eio.Time.sleep raft.system_clock wait_for; *)
+(*             Eio.Fiber.fork ~sw:main_sw (fun () -> *)
+(*                 traceln "⮀ Timer fired, dispatching…"; *)
+(*                 let _ = match raft.state.volatile.mode with *)
+(*                   | Leader    -> *)
+(*                     traceln "I'm a leader"; *)
+(*                     Msg_queue.send queue Command.Send_heartbeat *)
+(*                   | Follower  -> *)
+(*                     traceln "I'm a follower"; *)
+(*                     Msg_queue.send queue Command.Request_vote *)
+(*                   | Candidate -> *)
+(*                     traceln "I'm a candidate"; *)
+(*                     Msg_queue.send queue Command.Request_vote *)
+(*                 in (); *)
+(*               ); *)
+(*             loop (); *)
+(*           in *)
+(*           match loop () with *)
+(*           | () -> traceln "???" *)
+(*           | exception Stdlib.Exit -> traceln "Cancelling execution" *)
+(*         ) *)
+(*     ); *)
+
+;;
+(* let reset_timer main_sw raft (queue : (Command.t, Response.t) Msg_queue.t) = *)
+(*   traceln "Resetting timer"; *)
+(*   Option.iter raft.timer ~f:(fun old_sw -> *)
+(*     Eio.Switch.fail old_sw (Eio.Cancel.Cancelled Timer_cancel) *)
+(*   ); *)
+(*   Eio.Fiber.fork ~sw:main_sw (fun () -> *)
+(*     Eio.Switch.run_protected ~name:"Timer" (fun timer_sw -> *)
+(*       raft.timer <- Some timer_sw; *)
+
+(*       let rec loop () = *)
+(*         let secs = match raft.state.volatile.mode with *)
+(*           | Leader    -> 0.200 *)
+(*           | Follower | Candidate -> 3.000 *)
+(*         in *)
+(*         let wait_for = secs +. Random.float secs in *)
+
+(*         traceln "Timer sleeping %.3f s" wait_for; *)
+(*         Eio.Time.sleep raft.system_clock wait_for; *)
+
+(*         traceln "⮀ Timer fired, dispatching…"; *)
+(*         Eio.Fiber.fork ~sw:main_sw (fun () -> *)
+(*           let _ = match raft.state.volatile.mode with *)
+(*             | Leader    -> *)
+(*               traceln "I'm a leader"; *)
+(*               Msg_queue.send queue Command.Send_heartbeat *)
+(*             | Follower  -> *)
+(*               traceln "I'm a follower"; *)
+(*               Msg_queue.send queue Command.Request_vote *)
+(*             | Candidate -> *)
+(*               traceln "I'm a candidate"; *)
+(*               Msg_queue.send queue Command.Request_vote *)
+(*           in () *)
+(*         ); *)
+(*         loop () *)
+(*       in *)
+(*       match loop () with *)
+(*       | () -> traceln "???" *)
+(*       | exception Stdlib.Exit -> traceln "Cancelling execution" *)
+(*     ) *)
+(*   ) *)
 
 let process_update raft update =
   let sm = State_machine.update raft.state_machine update in
@@ -195,9 +259,11 @@ let handler raft net sw (queue : (Command.t, Response.t) Msg_queue.t) (command :
   match command with
   | Process_append msg ->
     let r = Response.Append_response (append_entries raft queue msg) in
+    reset_timer sw raft queue;
     r
   | Process_vote msg ->
     let r = Response.Election_response (process_vote_request raft queue msg) in
+    reset_timer sw raft queue;
     r
   | Send_heartbeat -> send_heartbeat raft sw net; Response.Done
   | Request_vote -> trigger_election raft sw net; Response.Done
@@ -232,6 +298,7 @@ let make id (env : Eio_unix.Stdenv.base) replicas quorum =
     state_machine = State_machine.make;
     timer = None;
     system_clock = Eio.Stdenv.clock env;
+    timer_gen = 0;
     quorum;
   }
   in
@@ -249,6 +316,8 @@ let handle_rpc (queue : (Command.t, Response.t) Msg_queue.t) flow _addr =
     | Append msg -> Msg_queue.send queue (Command.Process_append msg)
     | Request_vote msg -> Msg_queue.send queue (Command.Process_vote msg)
   in
+  let response_str = Sexplib.Sexp.to_string_hum ([%sexp_of: Response.t] response) in
+  traceln "[SERVER] RESPONSE: %s" response_str;
   let resp_msg = match response with
     | Append_response msg -> Api.Append_response msg
     | Election_response msg -> Api.Request_vote_response msg
@@ -271,11 +340,7 @@ let start raft env sw port =
         ~on_error:(traceln "Error found: %a" Fmt.exn)
     );
 
-  traceln "Starting timer";
-
   reset_timer sw raft queue;
-
-  traceln "Starting timer DONE";
   traceln "Ready to rock";
 
 
