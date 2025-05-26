@@ -64,7 +64,7 @@ let () =
   Switch.run ~name:"Server" @@ fun sw ->
   let config_str = Config.sexp_of_t config in
   traceln "Server Config:\n %s" @@ Sexp.to_string_hum config_str;
-  let raft = Raft_lib.Raft.make config.id env config.cluster.replicas in
+  let raft = Raft_lib.Raft.make config.id env config.cluster.replicas config.cluster.quorum in
   Raft_lib.Raft.start raft env sw config.op_port;
   traceln "[SERVER] Server ready!";
 

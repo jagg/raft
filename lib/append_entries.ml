@@ -76,11 +76,18 @@ let apply operation (state : 'a State.t) =
     else
       state.persistent.voted_for
   in
+  let (new_mode : State.Volatile_state.mode) = match state.volatile.mode with
+    | Leader -> if not outdated then Follower else Leader
+    | Follower -> Follower
+    | Candidate -> Candidate
+  in
   let new_state : 'a State.t = {
     volatile = {
-      state.volatile with commit_index = Int.min
-                              last_index
-                              operation.leader_commit_index
+      state.volatile with
+      commit_index = Int.min
+          last_index
+          operation.leader_commit_index;
+      mode = new_mode;
     };
     persistent = {
       state.persistent with

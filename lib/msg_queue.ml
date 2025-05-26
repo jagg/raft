@@ -22,4 +22,7 @@ let send queue body =
   let promise, resolver  = Promise.create () in
   Eio.Stream.add queue @@ Msg (body, resolver);
   (** We don't want to return until we know it's been committed *)
-  Promise.await promise
+  traceln "Wating for a response...";
+  let r = Promise.await promise in
+  traceln "Response arrived";
+  r
