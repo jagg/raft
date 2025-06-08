@@ -45,10 +45,19 @@ let init_cluster_map replicas =
 let trigger_election raft sw net =
   let (new_state, msg) = Request_vote.emit raft.state in
   raft.state <- new_state;
-  let responses = List.map (Map.data raft.replicas) ~f:(fun (ip,port) ->
-      (* TODO run this in parallel! *)
-      Api.send_vote_request sw net msg ip port)
-  in
+  let replicas_list = Map.data raft.replicas in
+  let promises_and_resolvers = List.map replicas_list ~f:(fun _ ->
+    Eio.Promise.create ()
+  ) in
+  List.iter2_exn replicas_list promises_and_resolvers ~f:(fun (ip, port) (_, resolver) ->
+    Eio.Fiber.fork ~sw (fun () ->
+      let result = Api.send_vote_request sw net msg ip port in
+      Eio.Promise.resolve resolver result
+    )
+  );
+  let responses = List.map promises_and_resolvers ~f:(fun (promise, _) ->
+    Eio.Promise.await promise
+  ) in
   let ok_resp = List.filter_map responses ~f:(fun r -> match r with
       | Ok r ->
         Some r
@@ -81,17 +90,27 @@ let trigger_election raft sw net =
 
 let send_heartbeat raft sw net =
   let msgs = Append_entries.emit_all raft.state in
-  let responses = List.map msgs ~f:(fun msg ->
-      (* TODO run this in parallel! *)
+  let valid_msgs = List.filter_map msgs ~f:(fun msg ->
       match Map.find raft.replicas msg.destination_id with
       | Some (ip, port) ->
         traceln "Sending heartbeat to %s:%d" ip port;
-        Some (Api.send_append sw net msg ip port);
+        Some (msg, ip, port)
       | None ->
         traceln "Failed to send heartbeat, I don't know the id";
         None
+    ) in
+  let promises_and_resolvers = List.map valid_msgs ~f:(fun _ ->
+    Eio.Promise.create ()
+  ) in
+  List.iter2_exn valid_msgs promises_and_resolvers ~f:(fun (msg, ip, port) (_, resolver) ->
+    Eio.Fiber.fork ~sw (fun () ->
+      let result = Some (Api.send_append sw net msg ip port) in
+      Eio.Promise.resolve resolver result
     )
-  in
+  );
+  let responses = List.map promises_and_resolvers ~f:(fun (promise, _) ->
+    Eio.Promise.await promise
+  ) in
   let latest_term = List.fold responses ~init:0 ~f:(fun acc resp ->
       let term = Option.map resp ~f:(fun r ->
           match r with

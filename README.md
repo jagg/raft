@@ -9,7 +9,7 @@ The Raft cluster now supports client operations to add, delete, and retrieve ite
 ### Available Operations
 
 - **Add**: Store a key-value pair in the state machine
-- **Delete**: Remove a key from the state machine  
+- **Delete**: Remove a key from the state machine
 - **Get**: Retrieve the value for a key from the state machine
 
 ### Client Usage
@@ -97,7 +97,7 @@ Run servers from different terminals with their own cluster.conf files, and watc
 # Terminal 1
 dune exec raft -- -p 5555 -o 7771 -i "one" -f cluster.conf
 
-# Terminal 2  
+# Terminal 2
 dune exec raft -- -p 5556 -o 7772 -i "two" -f cluster2.conf
 
 # Terminal 3
@@ -113,13 +113,14 @@ The client APIs work as follows:
 3. **Error handling**: If you send a write request to a follower, you'll get an error message indicating it's not the leader
 4. **Consistency**: All write operations go through the Raft consensus protocol to ensure consistency
 5. **Read performance**: Get operations read directly from any node's state machine, enabling load distribution
+6. **Parallel execution**: Election requests and heartbeats are sent to all replicas concurrently using Eio for improved performance
 
 ### Client Protocol
 
 The client communicates with the Raft cluster using the same RPC protocol as inter-node communication, with new message types:
 
 - `Client_add (key, value)`: Add operation
-- `Client_delete key`: Delete operation  
+- `Client_delete key`: Delete operation
 - `Client_get key`: Get operation
 
 Responses include success/error status and appropriate data.
@@ -135,14 +136,13 @@ Responses include success/error status and appropriate data.
 
 3. **Write-to-Leader Requirement**: Add and delete operations only work on the leader to maintain consistency through the Raft consensus protocol.
 
-4. **Demo Scripts**: The provided demo scripts (`demo.sh`, `working_demo.sh`, `test_client.sh`, `multi_node_demo.sh`) handle process management and cleanup automatically.
+4. **Parallel Communication**: The implementation uses Eio for concurrent operations:
+   - Election requests are sent to all replicas simultaneously
+   - Heartbeats are broadcast to all followers in parallel
+   - This significantly improves cluster responsiveness and reduces latency
 
 5. **Executable Usage**: Use `--` separator when using `dune exec` to pass arguments to the client, or call the built executables directly to avoid conflicts.
 
-6. **Configuration Files**: 
+6. **Configuration Files**:
    - `single_node.conf`: For single-node testing (quorum=1)
    - `cluster.conf`, `cluster2.conf`, `cluster3.conf`: For multi-node testing
-
-7. **Testing Scripts**:
-   - `test_any_node_reads.sh`: Demonstrates read-anywhere behavior
-   - `multi_node_demo.sh`: Shows leader-only writes and any-node reads with multiple nodes
