@@ -8,6 +8,9 @@ module Command = struct
     | Execute of State_machine.update
     | Request_vote
     | Send_heartbeat
+    | Client_add of string * int
+    | Client_delete of string
+    | Client_get of string
   [@@deriving sexp]
 end
 
@@ -17,6 +20,8 @@ module Response = struct
     | Error of string
     | Append_response of Append_entries.result
     | Election_response of Request_vote.result
+    | Client_response of (string, string) Result.t
+    | Client_get_response of (int option, string) Result.t
   [@@deriving sexp]
 end
 
@@ -28,7 +33,7 @@ type t = {
   replicas : (string * int) Map.M(State.Server_id).t;
   mutable state_machine : State_machine.t;
   system_clock : float Time.clock_ty Std.r;
-  mutable timer : Switch.t option; 
+  mutable timer : Switch.t option;
 }
 
 let init_cluster_map replicas =
@@ -53,10 +58,10 @@ let trigger_election raft sw net =
   in
   let vote_count = List.fold ok_resp ~init:0 ~f:(fun acc resp ->
       acc + (if resp.vote_granted then 1 else 0))
-  in 
+  in
   let latest_term = List.fold ok_resp ~init:0 ~f:(fun acc resp ->
       Int.max acc resp.current_term)
-  in 
+  in
   let new_state : State_machine.update State.t = {
     persistent = { raft.state.persistent with
                    current_term = Int.max latest_term raft.state.persistent.current_term
@@ -96,13 +101,13 @@ let send_heartbeat raft sw net =
             0
         ) in
       Int.max acc (Option.value term ~default:0))
-  in 
+  in
   let success_count = List.fold responses ~init:0 ~f:(fun acc resp ->
       let v = match resp with
         | Some r ->
           (match r with
            |  Ok r -> if r.success then 1 else 0
-           |  Error _ -> 0) 
+           |  Error _ -> 0)
         | None -> 0
       in
       acc + v)
@@ -182,12 +187,38 @@ let handler raft net sw (queue : (Command.t, Response.t) Msg_queue.t) (command :
     let r = Response.Election_response (process_vote_request raft queue msg) in
     reset_timer sw raft queue;
     r
-  | Send_heartbeat -> send_heartbeat raft sw net; Response.Done
-  | Request_vote -> trigger_election raft sw net; Response.Done
+  | Send_heartbeat ->
+    send_heartbeat raft sw net;
+    Response.Done
+  | Request_vote ->
+    trigger_election raft sw net;
+    Response.Done
   | Execute update ->
-    match raft.state.volatile.mode with
-    | Leader -> process_update raft update; Response.Done
-    | Follower | Candidate -> Response.Error "I'm not the leader"
+    (match raft.state.volatile.mode with
+     | Leader -> process_update raft update; Response.Done
+     | Follower | Candidate -> Response.Error "I'm not the leader")
+  | Client_add (key, value) ->
+    (match raft.state.volatile.mode with
+     | Leader ->
+       let update = State_machine.Set (key, value) in
+       raft.state <- State.append_to_log raft.state update;
+       process_update raft update;
+       Response.Client_response (Ok ("Successfully added " ^ key))
+     | Follower | Candidate ->
+       Response.Client_response (Error "I'm not the leader"))
+  | Client_get key ->
+    (* Allow get operations on any node (leader, follower, or candidate) *)
+    let result = State_machine.get raft.state_machine key in
+    Response.Client_get_response (Ok result)
+  | Client_delete key ->
+    (match raft.state.volatile.mode with
+     | Leader ->
+       let update = State_machine.Delete key in
+       raft.state <- State.append_to_log raft.state update;
+       process_update raft update;
+       Response.Client_response (Ok ("Successfully deleted " ^ key))
+     | Follower | Candidate ->
+       Response.Client_response (Error "I'm not the leader"))
 
 
 let make id (env : Eio_unix.Stdenv.base) replicas quorum =
@@ -232,12 +263,17 @@ let handle_rpc (queue : (Command.t, Response.t) Msg_queue.t) flow _addr =
   let response = match rpc with
     | Append msg -> Msg_queue.send queue (Command.Process_append msg)
     | Request_vote msg -> Msg_queue.send queue (Command.Process_vote msg)
+    | Client_add (key, value) -> Msg_queue.send queue (Command.Client_add (key, value))
+    | Client_delete key -> Msg_queue.send queue (Command.Client_delete key)
+    | Client_get key -> Msg_queue.send queue (Command.Client_get key)
   in
   let response_str = Sexplib.Sexp.to_string_hum ([%sexp_of: Response.t] response) in
   traceln "[SERVER] RESPONSE: %s" response_str;
   let resp_msg = match response with
     | Append_response msg -> Api.Append_response msg
     | Election_response msg -> Api.Request_vote_response msg
+    | Client_response result -> Api.Client_response result
+    | Client_get_response result -> Api.Client_get_response result
     | Done | Error _ -> failwith "Unexpected response!"
   in
   Api.send_response resp_msg to_client
@@ -259,5 +295,3 @@ let start raft env sw port =
 
   reset_timer sw raft queue;
   traceln "Ready to rock";
-
-

@@ -54,7 +54,7 @@ let apply operation (state : 'a State.t) =
   if not outdated && candidate_up_to_date && not voted_someone_else then
     (
       {
-        state with 
+        state with
         persistent = { state.persistent with
                        voted_for = Some operation.candidate_id;
                        current_term;
@@ -70,4 +70,3 @@ let apply operation (state : 'a State.t) =
         current_term;
         vote_granted = false;
       })
-

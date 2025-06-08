@@ -3,11 +3,16 @@ open! Base
 type rpc =
   | Append of State_machine.update Append_entries.t
   | Request_vote of Request_vote.t
+  | Client_add of string * int
+  | Client_delete of string
+  | Client_get of string
 [@@deriving sexp]
 
 type response =
   | Append_response of Append_entries.result
   | Request_vote_response of Request_vote.result
+  | Client_response of (string, string) Result.t
+  | Client_get_response of (int option, string) Result.t
 [@@deriving sexp]
 
 let encode_string pos buffer str =
@@ -62,12 +67,14 @@ let send_rpc
 let send_append sw net msg ip port =
   Or_error.try_with @@ fun () ->
    match send_rpc
-    ~sexp_of_req:[%sexp_of: rpc]
-    ~of_sexp_resp:[%of_sexp: response]
-    sw net (Append msg) ip port
-   with
-   | Append_response msg -> msg
-   | Request_vote_response _ -> failwith "Wrong response"
+     ~sexp_of_req:[%sexp_of: rpc]
+     ~of_sexp_resp:[%of_sexp: response]
+     sw net (Append msg) ip port
+    with
+    | Append_response msg -> msg
+    | Request_vote_response _ -> failwith "Wrong response"
+    | Client_response _ -> failwith "Wrong response"
+    | Client_get_response _ -> failwith "Wrong response"
   
 
 let send_vote_request sw net msg ip port =
@@ -79,7 +86,45 @@ let send_vote_request sw net msg ip port =
   with
    | Append_response _ -> failwith "Wrong response"
    | Request_vote_response msg -> msg 
+   | Client_response _ -> failwith "Wrong response"
+   | Client_get_response _ -> failwith "Wrong response"
   
+
+let send_client_add sw net key value ip port =
+  Or_error.try_with @@ fun () ->
+  match send_rpc
+    ~sexp_of_req:[%sexp_of: rpc]
+    ~of_sexp_resp:[%of_sexp: response]
+    sw net (Client_add (key, value)) ip port
+  with
+   | Append_response _ -> failwith "Wrong response"
+   | Request_vote_response _ -> failwith "Wrong response"
+   | Client_response result -> result
+   | Client_get_response _ -> failwith "Wrong response"
+
+let send_client_get sw net key ip port =
+  Or_error.try_with @@ fun () ->
+  match send_rpc
+    ~sexp_of_req:[%sexp_of: rpc]
+    ~of_sexp_resp:[%of_sexp: response]
+    sw net (Client_get key) ip port
+  with
+   | Append_response _ -> failwith "Wrong response"
+   | Request_vote_response _ -> failwith "Wrong response"
+   | Client_response _ -> failwith "Wrong response"
+   | Client_get_response result -> result
+
+let send_client_delete sw net key ip port =
+  Or_error.try_with @@ fun () ->
+  match send_rpc
+    ~sexp_of_req:[%sexp_of: rpc]
+    ~of_sexp_resp:[%of_sexp: response]
+    sw net (Client_delete key) ip port
+  with
+   | Append_response _ -> failwith "Wrong response"
+   | Request_vote_response _ -> failwith "Wrong response"
+   | Client_response result -> result
+   | Client_get_response _ -> failwith "Wrong response"
 
 let receive_rpc_command reader =
   get_sexp [%of_sexp: rpc]  reader

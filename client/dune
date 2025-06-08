@@ -1,5 +1,5 @@
 (executable
- (public_name raft)
+ (public_name raft_client)
  (name main)
  (preprocess
   (pps ppx_jane))
