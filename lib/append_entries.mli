@@ -1,6 +1,5 @@
 open! Base
 
-(** The AppendEntries RPC request, parameterized by the type of commands. *)
 type 'a t = {
   term                   : int;
   prev_log_index         : int;
@@ -12,7 +11,6 @@ type 'a t = {
 }
 [@@deriving sexp]
 
-(** The AppendEntries RPC response. *)
 type result = {
   success      : bool;
   current_term : int;
@@ -22,7 +20,7 @@ type result = {
 (** [emit_all state] emits one AppendEntries request for each peer in [state]. *)
 val emit_all : 'a State.t -> 'a t list
 
-(** [apply operation state] applies an incoming AppendEntries [operation]  
+(** [apply operation state] applies an incoming AppendEntries [operation]
     to [state] and returns:
     - the new state
     - the list of log entries that need to be applied and commited in the state machine

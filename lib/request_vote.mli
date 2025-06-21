@@ -1,6 +1,5 @@
 open! Base
 
-(** RequestVote RPC request, parameterized by the type of commands in the log. *)
 type t = {
   term            : int;
   candidate_id    : State.Server_id.t;
@@ -9,7 +8,6 @@ type t = {
 }
 [@@deriving sexp]
 
-(** RequestVote RPC response. *)
 type result = {
   current_term : int;
   vote_granted : bool;
